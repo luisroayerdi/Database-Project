@@ -1,218 +1,196 @@
 -- =====================================================================
--- Music Streaming Database - Schema (PostgreSQL)
--- =====================================================================
--- Run:  psql -d <your_db> -f sql/schema.sql
+-- Music Library Database - Schema (MySQL)
+-- Run: mysql -u <user> -p <db> < sql/schema.sql
 --
--- Requirements enforced:
---   R1: Song release date must be <= its album's release date  (triggers)
---   R2: A playlist has exactly one owner user_id                (NOT NULL FK)
---   R3: Collaborator ids must exist in Users                    (FK)
---   R4: Streams >= 0                                            (CHECK)
---   R5: Passwords are at least 10 characters                    (CHECK)
+-- Requirements:
+--   R1: Song.release_date <= Album.release_date      (triggers)
+--   R2: One creator_user_id per playlist              (NOT NULL FK)
+--   R3: collaborator_user_id must exist in Users      (FK)
+--   R4: Song.streams >= 0                             (CHECK)
+--   R5: Password length >= 10                         (CHECK)
 --
--- NULL policy:
---   Users.email          NULL = user did not register an email
---   Artist.description   NULL = artist opted out of a description
---   Users.library        replaced by the User_Library junction table
---                        (see Normalization); no rows = empty library
+-- NULL policy (all other columns are NOT NULL):
+--   Playlist.last_updated  not updated since creation
+--   Artist.description     artist opted out
+--   Users.email            no email registered
 -- =====================================================================
 
-DROP TABLE IF EXISTS Playlist_Collaborators CASCADE;
-DROP TABLE IF EXISTS Playlist_Songs         CASCADE;
-DROP TABLE IF EXISTS Playlist               CASCADE;
-DROP TABLE IF EXISTS User_Library           CASCADE;
-DROP TABLE IF EXISTS Album_Songs            CASCADE;
-DROP TABLE IF EXISTS Album                  CASCADE;
-DROP TABLE IF EXISTS Song_Features          CASCADE;
-DROP TABLE IF EXISTS Song                   CASCADE;
-DROP TABLE IF EXISTS Artist                 CASCADE;
-DROP TABLE IF EXISTS Users                  CASCADE;
-
--- ---------------------------------------------------------------------
--- Users
--- ---------------------------------------------------------------------
+-- Users Table
 CREATE TABLE Users (
-    user_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id   INT AUTO_INCREMENT PRIMARY KEY,
     password  VARCHAR(255) NOT NULL,
-    email     VARCHAR(255) UNIQUE,            -- NULL = no email registered
-    -- R5: password must be at least 10 characters
-    CONSTRAINT chk_password_min_length CHECK (char_length(password) >= 10)
+    email     VARCHAR(255) NULL UNIQUE,
+    CONSTRAINT chk_password_min_length CHECK (CHAR_LENGTH(password) >= 10)  -- R5
 );
 
--- ---------------------------------------------------------------------
--- Artist
--- ---------------------------------------------------------------------
+-- Artist Table
 CREATE TABLE Artist (
-    artist_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    description  TEXT,                         -- NULL = opted out
+    artist_id    INT AUTO_INCREMENT PRIMARY KEY,
+    description  TEXT NULL,
     artist_name  VARCHAR(255) NOT NULL
 );
 
--- ---------------------------------------------------------------------
--- Song
--- ---------------------------------------------------------------------
+-- Song Table
 CREATE TABLE Song (
-    song_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    genre         VARCHAR(100),
+    song_id       INT AUTO_INCREMENT PRIMARY KEY,
+    genre         VARCHAR(100) NOT NULL,
     release_date  DATE NOT NULL,
-    artist_id     INTEGER NOT NULL REFERENCES Artist(artist_id) ON DELETE CASCADE,
+    artist_id     INT NOT NULL,
     streams       BIGINT NOT NULL DEFAULT 0,
     name          VARCHAR(255) NOT NULL,
-    -- R4: streams can never be negative
-    CONSTRAINT chk_streams_nonnegative CHECK (streams >= 0)
+    FOREIGN KEY (artist_id) REFERENCES Artist(artist_id) ON DELETE CASCADE,
+    CONSTRAINT chk_streams_nonnegative CHECK (streams >= 0)  -- R4
 );
 
--- Composite index: quickly sort the most popular songs within a genre
-CREATE INDEX indx_song_genre_streams ON Song (genre, streams DESC);
+-- Top songs by genre (COMPOSITE INDEX)
+CREATE INDEX idx_song_genre_streams ON Song (genre, streams DESC);
 
--- ---------------------------------------------------------------------
--- Song_Features  (featured artists on a song)
--- ---------------------------------------------------------------------
+-- Song_Features Table
 CREATE TABLE Song_Features (
-    song_id             INTEGER NOT NULL REFERENCES Song(song_id)     ON DELETE CASCADE,
-    featured_artist_id  INTEGER NOT NULL REFERENCES Artist(artist_id) ON DELETE CASCADE,
-    PRIMARY KEY (song_id, featured_artist_id)
+    song_id             INT NOT NULL,
+    featured_artist_id  INT NOT NULL,
+    PRIMARY KEY (song_id, featured_artist_id),
+    FOREIGN KEY (song_id)            REFERENCES Song(song_id)     ON DELETE CASCADE,
+    FOREIGN KEY (featured_artist_id) REFERENCES Artist(artist_id) ON DELETE CASCADE
 );
 
--- ---------------------------------------------------------------------
--- Album
--- ---------------------------------------------------------------------
+-- Album Table
 CREATE TABLE Album (
-    album_id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    artist_id     INTEGER NOT NULL REFERENCES Artist(artist_id) ON DELETE CASCADE,
+    album_id      INT AUTO_INCREMENT PRIMARY KEY,
+    artist_id     INT NOT NULL,
     release_date  DATE NOT NULL,
-    genre         VARCHAR(100),
-    title         VARCHAR(255) NOT NULL
+    genre         VARCHAR(100) NOT NULL,
+    title         VARCHAR(255) NOT NULL,
+    FOREIGN KEY (artist_id) REFERENCES Artist(artist_id) ON DELETE CASCADE
 );
 
--- ---------------------------------------------------------------------
--- Album_Songs
--- ---------------------------------------------------------------------
+-- Album_Songs Table
 CREATE TABLE Album_Songs (
-    album_id        INTEGER NOT NULL REFERENCES Album(album_id) ON DELETE CASCADE,
-    song_id         INTEGER NOT NULL REFERENCES Song(song_id)   ON DELETE CASCADE,
-    track_position  INTEGER NOT NULL CHECK (track_position > 0),
+    album_id        INT NOT NULL,
+    song_id         INT NOT NULL,
+    track_position  INT NOT NULL,
     PRIMARY KEY (album_id, song_id),
-    UNIQUE (album_id, track_position)          -- no two songs in the same slot
+    UNIQUE (album_id, track_position),  -- one song per slot
+    FOREIGN KEY (album_id) REFERENCES Album(album_id) ON DELETE CASCADE,
+    FOREIGN KEY (song_id)  REFERENCES Song(song_id)   ON DELETE CASCADE,
+    CONSTRAINT chk_album_track_pos CHECK (track_position > 0)
 );
 
--- ---------------------------------------------------------------------
--- Normalization: User_Library junction table
--- Replaces the multi-valued Users.library column (which violated 1NF).
--- A user with no rows here simply has an empty library.
--- ---------------------------------------------------------------------
-CREATE TABLE User_Library (
-    user_id   INTEGER NOT NULL REFERENCES Users(user_id) ON DELETE CASCADE,
-    song_id   INTEGER NOT NULL REFERENCES Song(song_id)  ON DELETE CASCADE,
-    added_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, song_id)
-);
-
--- ---------------------------------------------------------------------
--- Playlist
--- R2: exactly one owner -> single NOT NULL user_id column
--- ---------------------------------------------------------------------
+-- Playlist Table (R2)
 CREATE TABLE Playlist (
-    playlist_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id        INTEGER NOT NULL REFERENCES Users(user_id) ON DELETE CASCADE,
-    creation_date  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_updated   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    title          VARCHAR(255) NOT NULL,
+    playlist_id      INT AUTO_INCREMENT PRIMARY KEY,
+    creator_user_id  INT NOT NULL,
+    creation_date    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_updated     DATETIME NULL DEFAULT NULL,
+    title            VARCHAR(255) NOT NULL,
+    FOREIGN KEY (creator_user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
     CONSTRAINT chk_playlist_dates CHECK (last_updated >= creation_date)
 );
 
--- ---------------------------------------------------------------------
--- Playlist_Songs
--- ---------------------------------------------------------------------
+-- Playlist_Songs Table
 CREATE TABLE Playlist_Songs (
-    playlist_id     INTEGER NOT NULL REFERENCES Playlist(playlist_id) ON DELETE CASCADE,
-    song_id         INTEGER NOT NULL REFERENCES Song(song_id)         ON DELETE CASCADE,
-    track_position  INTEGER NOT NULL CHECK (track_position > 0),
+    playlist_id     INT NOT NULL,
+    song_id         INT NOT NULL,
+    track_position  INT NOT NULL,
     PRIMARY KEY (playlist_id, song_id),
-    UNIQUE (playlist_id, track_position)
+    UNIQUE (playlist_id, track_position),  -- one song per slot
+    FOREIGN KEY (playlist_id) REFERENCES Playlist(playlist_id) ON DELETE CASCADE,
+    FOREIGN KEY (song_id)     REFERENCES Song(song_id)         ON DELETE CASCADE,
+    CONSTRAINT chk_playlist_track_pos CHECK (track_position > 0)
 );
 
--- ---------------------------------------------------------------------
--- Playlist_Collaborators
--- R3: collaborator_user_id must exist in Users (foreign key)
--- ---------------------------------------------------------------------
+-- Playlist_Collaborators (R3)
 CREATE TABLE Playlist_Collaborators (
-    playlist_id           INTEGER NOT NULL REFERENCES Playlist(playlist_id) ON DELETE CASCADE,
-    collaborator_user_id  INTEGER NOT NULL REFERENCES Users(user_id)        ON DELETE CASCADE,
-    PRIMARY KEY (playlist_id, collaborator_user_id)
+    playlist_id           INT NOT NULL,
+    collaborator_user_id  INT NOT NULL,
+    PRIMARY KEY (playlist_id, collaborator_user_id),
+    FOREIGN KEY (playlist_id)          REFERENCES Playlist(playlist_id) ON DELETE CASCADE,
+    FOREIGN KEY (collaborator_user_id) REFERENCES Users(user_id)        ON DELETE CASCADE
+);
+
+-- User library junction tables (replacing Users.library for 1NF)
+CREATE TABLE User_Albums (
+    user_id   INT NOT NULL,
+    album_id  INT NOT NULL,
+    PRIMARY KEY (user_id, album_id),
+    FOREIGN KEY (user_id)  REFERENCES Users(user_id)  ON DELETE CASCADE,
+    FOREIGN KEY (album_id) REFERENCES Album(album_id) ON DELETE CASCADE
+);
+
+CREATE TABLE User_Playlists (
+    user_id      INT NOT NULL,
+    playlist_id  INT NOT NULL,
+    PRIMARY KEY (user_id, playlist_id),
+    FOREIGN KEY (user_id)     REFERENCES Users(user_id)        ON DELETE CASCADE,
+    FOREIGN KEY (playlist_id) REFERENCES Playlist(playlist_id) ON DELETE CASCADE
+);
+
+CREATE TABLE User_Songs (
+    user_id  INT NOT NULL,
+    song_id  INT NOT NULL,
+    PRIMARY KEY (user_id, song_id),
+    FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (song_id) REFERENCES Song(song_id)  ON DELETE CASCADE
 );
 
 -- =====================================================================
--- R1: Song release_date <= Album release_date
--- This spans two tables, so a CHECK can't do it; triggers cover every
--- way the rule could be broken:
---   (a) adding/changing a row in Album_Songs
---   (b) moving a Song's release_date later
---   (c) moving an Album's release_date earlier
+-- R1 triggers: Song.release_date <= Album.release_date
+-- Checked on: Album_Songs insert/update, Song date update, Album date update
 -- =====================================================================
+DELIMITER //
 
--- (a) Album_Songs insert/update
-CREATE OR REPLACE FUNCTION trg_album_songs_release_check()
-RETURNS TRIGGER AS $$
-DECLARE
-    v_song_date  DATE;
-    v_album_date DATE;
+CREATE TRIGGER album_songs_release_check_ins
+BEFORE INSERT ON Album_Songs
+FOR EACH ROW
 BEGIN
-    SELECT release_date INTO v_song_date  FROM Song  WHERE song_id  = NEW.song_id;
-    SELECT release_date INTO v_album_date FROM Album WHERE album_id = NEW.album_id;
-
-    IF v_song_date > v_album_date THEN
-        RAISE EXCEPTION 'R1 violated: song % release date (%) is after album % release date (%)',
-            NEW.song_id, v_song_date, NEW.album_id, v_album_date;
+    IF (SELECT release_date FROM Song  WHERE song_id  = NEW.song_id) >
+       (SELECT release_date FROM Album WHERE album_id = NEW.album_id) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'R1 violated: song released after album';
     END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+END//
 
-CREATE TRIGGER album_songs_release_check
-BEFORE INSERT OR UPDATE ON Album_Songs
-FOR EACH ROW EXECUTE FUNCTION trg_album_songs_release_check();
-
--- (b) Song release_date update
-CREATE OR REPLACE FUNCTION trg_song_release_check()
-RETURNS TRIGGER AS $$
+CREATE TRIGGER album_songs_release_check_upd
+BEFORE UPDATE ON Album_Songs
+FOR EACH ROW
 BEGIN
-    IF EXISTS (
+    IF (SELECT release_date FROM Song  WHERE song_id  = NEW.song_id) >
+       (SELECT release_date FROM Album WHERE album_id = NEW.album_id) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'R1 violated: song released after album';
+    END IF;
+END//
+
+CREATE TRIGGER song_release_check
+BEFORE UPDATE ON Song
+FOR EACH ROW
+BEGIN
+    IF NEW.release_date <> OLD.release_date AND EXISTS (
         SELECT 1
         FROM Album_Songs s
         JOIN Album a ON a.album_id = s.album_id
         WHERE s.song_id = NEW.song_id
           AND NEW.release_date > a.release_date
     ) THEN
-        RAISE EXCEPTION 'R1 violated: song % release date (%) would be after one of its albums',
-            NEW.song_id, NEW.release_date;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'R1 violated: song date would be after an album date';
     END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+END//
 
-CREATE TRIGGER song_release_check
-BEFORE UPDATE OF release_date ON Song
-FOR EACH ROW EXECUTE FUNCTION trg_song_release_check();
-
--- (c) Album release_date update
-CREATE OR REPLACE FUNCTION trg_album_release_check()
-RETURNS TRIGGER AS $$
+CREATE TRIGGER album_release_check
+BEFORE UPDATE ON Album
+FOR EACH ROW
 BEGIN
-    IF EXISTS (
+    IF NEW.release_date <> OLD.release_date AND EXISTS (
         SELECT 1
         FROM Album_Songs s
         JOIN Song so ON so.song_id = s.song_id
         WHERE s.album_id = NEW.album_id
           AND so.release_date > NEW.release_date
     ) THEN
-        RAISE EXCEPTION 'R1 violated: album % release date (%) would be before one of its songs',
-            NEW.album_id, NEW.release_date;
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'R1 violated: album date would be before a song date';
     END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+END//
 
-CREATE TRIGGER album_release_check
-BEFORE UPDATE OF release_date ON Album
-FOR EACH ROW EXECUTE FUNCTION trg_album_release_check();
+DELIMITER ;
