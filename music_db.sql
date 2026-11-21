@@ -360,11 +360,12 @@ CALL expect_fail('1NF: saving the same song twice is rejected',
 -- Results
 SELECT result FROM test_results ORDER BY id;
 
--- Top Rock songs (served by idx_song_genre_streams)
+-- Top 5 Rock songs (served by idx_song_genre_streams)
 SELECT name, streams
 FROM Song
 WHERE genre = 'Rock'
-ORDER BY streams DESC;
+ORDER BY streams DESC
+LIMIT 5;
 
 ROLLBACK;
 
